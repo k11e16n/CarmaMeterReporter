@@ -1,0 +1,18 @@
+# 虛擬環境 —— 裡面是寫死的絕對路徑，且套件用 pip 就能重建，不該進版控
+venv/
+.venv/
+
+# Python 執行時自動產生的編譯快取
+__pycache__/
+*.pyc
+
+# 本機測試/執行產生的資料庫，每次重跑 carma_scraper.py 都會重建
+*.db
+*.sqlite3
+
+# 如果之後測試階段有用 .env 暫放 API key / Token（正式環境會走 GCP Secret Manager，
+# 但本機測試難免會先用檔案暫存，先排除掉避免不小心 commit 進去）
+.env
+
+# macOS 系統產生的檔案
+.DS_Store
