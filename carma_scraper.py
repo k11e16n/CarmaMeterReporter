@@ -605,23 +605,36 @@ def fetch_all_meters(service_address: str, account_number: str) -> list[dict]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="CARMA 用電/用水/暖氣資料抓取")
-    parser.add_argument("--service-address", default=os.environ.get("CARMA_SERVICE_ADDRESS"))
-    parser.add_argument("--account-number", default=os.environ.get("CARMA_ACCOUNT_NUMBER"))
+    parser.add_argument("--gcp-project", default=os.environ.get("GCP_PROJECT"), help="讀取 Secret Manager 用，正式排程時需要")
+    parser.add_argument("--service-address", default=None, help="手動測試用覆蓋值，留空則從 Secret Manager 讀取")
+    parser.add_argument("--account-number", default=None, help="手動測試用覆蓋值，留空則從 Secret Manager 讀取")
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     args = parser.parse_args()
 
-    if not args.service_address or not args.account_number:
-        print(
-            "錯誤：缺少 --service-address / --account-number，"
-            "或對應的環境變數 CARMA_SERVICE_ADDRESS / CARMA_ACCOUNT_NUMBER",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    service_address = args.service_address
+    account_number = args.account_number
+
+    if not service_address or not account_number:
+        if not args.gcp_project:
+            print(
+                "錯誤：--service-address / --account-number 沒有全部給齊，"
+                "需要 --gcp-project 才能從 Secret Manager 讀取剩下的憑證",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            from secrets_manager import load_config
+            config = load_config(args.gcp_project)
+        except Exception as e:
+            print(f"[FATAL] 從 Secret Manager 讀取憑證失敗：{e}", file=sys.stderr)
+            sys.exit(1)
+        service_address = service_address or config["carma_service_address"]
+        account_number = account_number or config["carma_account_number"]
 
     conn = init_db(args.db_path)
     try:
         try:
-            charts = fetch_all_meters(args.service_address, args.account_number)
+            charts = fetch_all_meters(service_address, account_number)
         except (RuntimeError, requests.RequestException) as e:
             # 登入失敗、網站結構跟預期不同等整體性錯誤，印出明確訊息方便 cron log 判斷
             print(f"[FATAL] 抓取流程整體失敗：{e}", file=sys.stderr)

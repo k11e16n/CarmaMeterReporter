@@ -29,6 +29,7 @@ CarmaMeterReporter 每日報告產生器。
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
 
@@ -232,11 +233,34 @@ def build_gemini_readings(items: dict) -> list[dict]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="CarmaMeterReporter 每日報告")
     parser.add_argument("--db-path", required=True)
-    parser.add_argument("--line-token", required=True)
-    parser.add_argument("--line-to", required=True)
-    parser.add_argument("--gemini-key", required=True)
+    parser.add_argument("--gcp-project", default=os.environ.get("GCP_PROJECT"), help="讀取 Secret Manager 用，正式排程時需要")
+    parser.add_argument("--line-token", default=None, help="手動測試用覆蓋值，留空則從 Secret Manager 讀取")
+    parser.add_argument("--line-to", default=None, help="手動測試用覆蓋值，留空則從 Secret Manager 讀取")
+    parser.add_argument("--gemini-key", default=None, help="手動測試用覆蓋值，留空則從 Secret Manager 讀取")
     parser.add_argument("--dry-run", action="store_true", help="只印出報告內容，不呼叫 LINE 推播")
     args = parser.parse_args()
+
+    line_token = args.line_token
+    line_to = args.line_to
+    gemini_key = args.gemini_key
+
+    if not (line_token and line_to and gemini_key):
+        if not args.gcp_project:
+            print(
+                "錯誤：--line-token / --line-to / --gemini-key 沒有全部給齊，"
+                "需要 --gcp-project 才能從 Secret Manager 讀取剩下的憑證",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            from secrets_manager import load_config
+            config = load_config(args.gcp_project)
+        except Exception as e:
+            print(f"[FATAL] 從 Secret Manager 讀取憑證失敗：{e}", file=sys.stderr)
+            sys.exit(1)
+        line_token = line_token or config["line_channel_access_token"]
+        line_to = line_to or config["line_group_id"]
+        gemini_key = gemini_key or config["gemini_api_key"]
 
     conn = sqlite3.connect(args.db_path)
     try:
@@ -250,7 +274,7 @@ def main() -> None:
 
     total = build_monthly_total(items)
     gemini_readings = build_gemini_readings(items)
-    observation = generate_daily_observation(args.gemini_key, gemini_readings)
+    observation = generate_daily_observation(gemini_key, gemini_readings)
 
     bubbles = build_bubbles(items)
     summary_bubble = build_summary_bubble(observation, total)
@@ -264,7 +288,7 @@ def main() -> None:
         print("\n[dry-run] 沒有實際推播", file=sys.stderr)
         return
 
-    push_line_message(args.line_token, args.line_to, [message])
+    push_line_message(line_token, line_to, [message])
     print("[OK] 每日報告推播完成")
 
 
