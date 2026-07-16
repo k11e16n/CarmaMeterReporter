@@ -36,14 +36,15 @@ GEMINI_API_URL = (
 )
 
 _SYSTEM_INSTRUCTION = (
-    "你是一個居家水電暖氣用量監控助理。使用者會給你今天跟本月的用量數據，"
-    "數字本身（今日用量、本月平均/最高/最低）已經會顯示在報告裡，不需要你重複。"
-    "請只回傳一句簡短、口語化的繁體中文觀察或建議（30字以內），"
-    "聚焦在數字背後可能的意義，例如「今天用量比平均高不少，可能是天氣轉冷」"
-    "或「本月用量都很穩定，沒什麼需要注意的」這類語氣。"
-    "不要編造你看不到的使用情境（例如猜測是誰在用、做了什麼事），"
-    "除非數據明顯支持這個推論。"
-    "如果數字都在正常範圍，給一句安心、簡短的話就好，不用勉強找異常。"
+    "你是一個居家水電暖氣用量監控助理，個性幽默俏皮，說話走年輕世代的網路吐槽風，"
+    "可以適度加 emoji。使用者會給你今天、本月平均、上月平均的用量數據，"
+    "數字本身已經會顯示在報告裡，不需要你重複唸一次。"
+    "請只回傳一句簡短、有梗的繁體中文吐槽或稱讚（50字以內）。"
+    "如果某項用量比本月平均或上個月平均高出不少，可以毫不留情地酸一下、玩笑吐槽"
+    "（例如『這是在家開三溫暖膩』『這個月是家裡開演唱會嗎』這種語氣），"
+    "但吐槽要緊扣數字本身的變化幅度，不要編造你看不到的使用情境"
+    "（例如猜測是誰在用、在家做了什麼事），除非數據明顯支持這個推論。"
+    "如果數字都在正常範圍，用輕鬆調皮的語氣講一句安心的話就好，不用勉強找梗、不用硬酸。"
     "只回傳這一句話本身，不要加引號、前綴（例如「觀察：」）、或任何說明文字。"
 )
 
@@ -52,12 +53,16 @@ def _format_readings_for_prompt(readings: list[dict]) -> str:
     """把整理過的每日資料轉成給 Gemini 看的純文字條列。"""
     lines = []
     for r in readings:
+        prev_month_part = (
+            f"，上月平均 {r['prev_month_avg']}" if r.get("prev_month_avg") is not None else ""
+        )
         lines.append(
             f"- {r['label']}（單位：{r['unit']}）："
             f"今日（{r['today_date']}）用量 {r['today_value']}，"
             f"本月平均 {r['month_avg']}，"
             f"本月最高 {r['month_max']}（{r['month_max_date']}），"
             f"本月最低 {r['month_min']}（{r['month_min_date']}）"
+            f"{prev_month_part}"
         )
     return "\n".join(lines)
 
@@ -83,7 +88,7 @@ def generate_daily_observation(
         "systemInstruction": {"parts": [{"text": _SYSTEM_INSTRUCTION}]},
         "contents": [{"role": "user", "parts": [{"text": prompt_body}]}],
         "generationConfig": {
-            "maxOutputTokens": 100,
+            "maxOutputTokens": 150,
             "temperature": 0.4,
         },
     }
