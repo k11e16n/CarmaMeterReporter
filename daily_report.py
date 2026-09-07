@@ -246,6 +246,18 @@ def build_report_items(conn: sqlite3.Connection) -> dict:
         elif source_type == "electricity":
             cumulative_yesterday = cumulative - latest_value
             daily_cost = daily_electricity_cost(cumulative, cumulative_yesterday, month_num)
+            if daily_cost < 0:
+                # 電費不可能是負的。就算 carma_scraper.py 那邊已經擋掉存進 DB
+                # 的負值用量，這裡還是留一道防線——例如剛好卡在月份交界，
+                # 累積量的計算基準點跟預期不同時，理論上也可能算出負值。
+                # 印出實際數字方便排查，並歸零避免異常訊息推播出去。
+                print(
+                    f"[WARN] 電費算出負值 {daily_cost:.2f}"
+                    f"（cumulative={cumulative}, cumulative_yesterday={cumulative_yesterday}），"
+                    f"歸零處理",
+                    file=sys.stderr,
+                )
+                daily_cost = 0.0
         else:
             daily_cost = 0.0
 
@@ -269,13 +281,22 @@ def build_monthly_total(items: dict) -> dict | None:
     if "electricity" not in items:
         return None
 
-    return monthly_total_estimate(
+    total = monthly_total_estimate(
         electricity_cumulative_kwh=items["electricity"]["cumulative"],
         cold_water_cumulative_m3=items.get("cold_water", {}).get("cumulative", 0.0),
         hot_water_cumulative_m3=items.get("hot_water", {}).get("cumulative", 0.0),
         heat_cooling_cumulative_kwh=items.get("heat_cooling", {}).get("cumulative", 0.0),
         month=items["electricity"]["month_num"],
     )
+
+    if total.get("electricity_rebate_clamped"):
+        print(
+            "[INFO] 月初累積電費被 rebate 扣過頭變成負值，已歸零"
+            "（正常現象，月初資料量還小時的數學結果，不是異常資料）",
+            file=sys.stderr,
+        )
+
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -315,11 +336,15 @@ def build_summary_bubble(observation: str | None, total: dict | None) -> dict:
     else:
         lines.append(f"本月累積估算：${total['total']:.2f}")
         lines.append(
-            f"電費 ${total['electricity_after_rebate']:.2f} ｜ "
+            f"電費 ${total['electricity_after_rebate'] + total['electricity_regulatory']:.2f} ｜ "
             f"水費 ${total['cold_water'] + total['hot_water']:.2f} ｜ "
             f"暖氣 ${total['heat_cooling']:.2f}"
         )
-        lines.append(f"固定費用（Delivery+其他）：${total['delivery'] + total['other']:.2f}")
+        lines.append(
+            f"Delivery ${total['delivery']:.2f} ｜ "
+            f"稅費附加 ${total['tax_recovery']:.2f} ｜ "
+            f"HST ${total['hst']:.2f}"
+        )
 
     return build_flex_bubble("本月摘要", lines)
 

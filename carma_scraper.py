@@ -124,6 +124,18 @@ def save_chart_data(conn: sqlite3.Connection, meter_id: str, chart: dict) -> Non
         if iso_date is None:
             print(f"[WARN] {meter_id}: 日期格式無法解析，略過此筆：{date_label!r}", file=sys.stderr)
             continue
+        if point["value"] < 0:
+            # 用量不可能是負的。CARMA 網站的資料在最終確認前可能經歷修正
+            # （淺藍色「估計值」之後會被覆蓋成正確讀數），懷疑修正過程中
+            # 偶爾會暫時吐出負值。存進去只會污染統計/費用計算，直接擋掉，
+            # 印出來留紀錄，方便之後如果再發生，能抓到實際數字而不是像
+            # 這次一樣，異常值已經被後續正確資料覆蓋、事後查不到。
+            print(
+                f"[WARN] {meter_id} {iso_date}: 抓到負值用量 {point['value']}，"
+                f"視為異常資料略過不存",
+                file=sys.stderr,
+            )
+            continue
         rows.append(
             (
                 meter_id,
