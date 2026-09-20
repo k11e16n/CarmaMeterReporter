@@ -444,6 +444,10 @@ def main() -> None:
     parser.add_argument("--gemini-key", default=None, help="手動測試用覆蓋值，留空則從 Secret Manager 讀取")
     parser.add_argument("--dry-run", action="store_true", help="只印出報告內容，不呼叫 LINE 推播")
     parser.add_argument(
+        "--force", action="store_true",
+        help="略過「跟上次推播比對有沒有新資料」的檢查，手動測試/部署驗證用，正式 cron 不要加這個參數",
+    )
+    parser.add_argument(
         "--max-staleness-days", type=int, default=7,
         help="最新資料超過幾天視為 carma_scraper.py 可能已經故障（預設 7 天）",
     )
@@ -503,7 +507,8 @@ def main() -> None:
 
         # CARMA 網站更新很慢，同一份資料可能連續好幾天都是「最新」——
         # 沒有新資料就不推播，避免每天收到內容一模一樣的報告。
-        if not has_new_data(conn, items):
+        # --force 略過這個檢查，手動測試/部署驗證用。
+        if not args.force and not has_new_data(conn, items):
             print("[INFO] 跟上次推播比對，沒有任何項目有新資料，本次略過推播", file=sys.stderr)
             return
 
