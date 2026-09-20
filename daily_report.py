@@ -424,6 +424,15 @@ def send_error_alert(line_token: str, line_to: str, message: str) -> None:
         print(f"[FATAL] 連錯誤通知都推播失敗：{e}", file=sys.stderr)
 
 
+def _cleanup_local_file(path: str) -> None:
+    """刪除已經上傳到 GCS、不再需要的本機暫存圖檔。刪除失敗只印警告，不
+    能因為清理暫存檔這種次要動作，讓已經成功的報告推播被當成失敗。"""
+    try:
+        os.remove(path)
+    except OSError as exc:
+        print(f"[WARN] 清理本機暫存檔失敗（不影響報告本身）：{path}（{exc}）", file=sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 
 def main() -> None:
@@ -517,6 +526,7 @@ def main() -> None:
             water_url = gcs_upload.upload_and_sign(
                 water_chart_path, f"charts/water_{run_date}.png", args.gcs_bucket, args.gcs_key_path
             )
+            _cleanup_local_file(water_chart_path)
             bubbles.append(build_water_chart_bubble(water_url))
         else:
             print("[WARN] 冷水/熱水資料不齊全，本次報告略過水表圖卡片", file=sys.stderr)
@@ -531,6 +541,7 @@ def main() -> None:
             power_url = gcs_upload.upload_and_sign(
                 power_chart_path, f"charts/power_{run_date}.png", args.gcs_bucket, args.gcs_key_path
             )
+            _cleanup_local_file(power_chart_path)
             bubbles.append(build_power_chart_bubble(power_url))
         else:
             print("[WARN] 冷暖氣/日常用電資料不齊全，本次報告略過電力圖卡片", file=sys.stderr)
@@ -540,9 +551,12 @@ def main() -> None:
 
         conclusion_image_path = os.path.join(args.chart_dir, f"conclusion_{run_date}.png")
         illustration_generator.compose_observation_card(observation, mascot_path, conclusion_image_path)
+        _cleanup_local_file(mascot_path)  # 只是合成過程的中間檔，從沒上傳過，合成完就沒用了
+
         conclusion_image_url = gcs_upload.upload_and_sign(
             conclusion_image_path, f"charts/conclusion_{run_date}.png", args.gcs_bucket, args.gcs_key_path
         )
+        _cleanup_local_file(conclusion_image_path)
         bubbles.append(build_conclusion_bubble(items, total, conclusion_image_url))
 
         message = build_flex_carousel_message("CarmaMeterReporter 每日報告", bubbles)
