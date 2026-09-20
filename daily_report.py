@@ -22,8 +22,9 @@ CarmaMeterReporter 每日報告產生器。
     python3 daily_report.py --db-path carma_readings.db \\
         --line-token "..." --line-to "..." --gemini-key "..." [--dry-run]
 
-    --dry-run 只印出組好的報告內容，不呼叫 LINE API（Gemini 觀察句仍然
-    會呼叫，因為那是報告內容的一部分，dry-run 是為了不消耗 LINE 推播額度）
+    --dry-run 只印出組好的報告內容，不呼叫 LINE API、不更新 report_state。
+    圖表產生、插圖挑選、GCS 上傳都照樣執行（印出來的 JSON 裡的 hero 圖片
+    網址才會是真的可以打開的），dry-run 只省下 LINE 推播額度。
 """
 
 from __future__ import annotations
@@ -32,8 +33,12 @@ import argparse
 import os
 import sqlite3
 import sys
+import tempfile
 from datetime import datetime
 
+import chart_generator
+import gcs_upload
+import illustration_generator
 from gemini_summary import generate_daily_observation
 from line_push import build_flex_bubble, build_flex_carousel_message, push_line_message
 from report_calc import (
@@ -180,6 +185,18 @@ def get_month_stats(conn: sqlite3.Connection, meter_id: str, as_of_date: str) ->
     }
 
 
+def get_recent_daily_series(conn: sqlite3.Connection, meter_id: str, days: int = 7) -> list[tuple[str, float]]:
+    """回傳最近 days 天的每日讀數，依日期升冪排序。跟 get_month_stats() 一樣
+    不過濾 value > 0——0 用量是合理數據，要在趨勢線上顯示成谷底，不能被濾掉。"""
+    rows = conn.execute(
+        "SELECT reading_date, value FROM utility_readings "
+        "WHERE meter_id = ? ORDER BY reading_date DESC LIMIT ?",
+        (meter_id, days),
+    ).fetchall()
+    rows.reverse()
+    return [(reading_date, value) for reading_date, value in rows]
+
+
 def get_previous_month_avg(conn: sqlite3.Connection, meter_id: str, as_of_date: str) -> float | None:
     """
     上個月（相對於 as_of_date 所在月份）的全月平均，用來跟本月比較。
@@ -237,6 +254,7 @@ def build_report_items(conn: sqlite3.Connection) -> dict:
         stats = get_month_stats(conn, meter_id, latest_date)
         cumulative = get_month_cumulative(conn, meter_id, latest_date)
         prev_month_avg = get_previous_month_avg(conn, meter_id, latest_date)
+        daily_series = get_recent_daily_series(conn, meter_id, days=7)
         month_num = int(latest_date[5:7])
 
         if source_type in ("hot_water", "cold_water"):
@@ -269,6 +287,7 @@ def build_report_items(conn: sqlite3.Connection) -> dict:
             "stats": stats,
             "cumulative": cumulative,
             "prev_month_avg": prev_month_avg,
+            "daily_series": daily_series,
             "daily_cost": daily_cost,
             "month_num": month_num,
         }
@@ -299,38 +318,52 @@ def build_monthly_total(items: dict) -> dict | None:
     return total
 
 
+def build_chart_series(items: dict, source_type: str) -> dict | None:
+    """把 items 裡單一 source_type 的資料轉成 chart_generator.render_dual_line_chart()
+    要的 series dict 格式；該 source_type 沒資料時回傳 None。"""
+    data = items.get(source_type)
+    if data is None:
+        return None
+    return {
+        "source_type": source_type,
+        "label": data["label"],
+        "unit": data["unit"],
+        "daily": data["daily_series"],
+        "month_avg": data["stats"]["avg"] if data["stats"] else None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 組 LINE 訊息
 # ---------------------------------------------------------------------------
 
-def build_bubbles(items: dict) -> list[dict]:
-    bubbles = []
-    for source_type, data in items.items():
-        stats = data["stats"]
-        lines = [f"最新（{data['latest_date']}）：{data['latest_value']:.3f} {data['unit']}"]
-        if stats:
-            lines.append(
-                f"本月平均 {stats['avg']:.3f} ｜ 最高 {stats['max']:.3f}（{stats['max_date']}）"
-                f" ｜ 最低 {stats['min']:.3f}（{stats['min_date']}）"
-            )
-        if data.get("prev_month_avg") is not None:
-            lines.append(f"上月平均 {data['prev_month_avg']:.3f}（跟本月比較用）")
-        lines.append(f"當日費用估算：${data['daily_cost']:.2f}")
-        bubbles.append(build_flex_bubble(data["label"], lines))
-    return bubbles
+def build_water_chart_bubble(chart_url: str) -> dict:
+    return build_flex_bubble("水表報告", ["冷水 + 熱水　近7日趨勢"], hero_image_url=chart_url)
 
 
-def build_summary_bubble(observation: str | None, total: dict | None) -> dict:
+def build_power_chart_bubble(chart_url: str) -> dict:
+    return build_flex_bubble("電力報告", ["冷暖氣 + 日常用電　近7日趨勢"], hero_image_url=chart_url)
+
+
+def build_conclusion_bubble(items: dict, total: dict | None, conclusion_image_url: str) -> dict:
     """
-    獨立的第五張卡片：Gemini 觀察句 + 本月累積估算。
-    獨立成卡片而不是掛在某張追蹤項目卡片的 footer 上，是因為掛哪張純粹
-    看 METERS 這個 dict 的排列順序，跟內容本身無關，容易讓人誤以為
-    這句觀察是針對「掛著的那張卡片」講的。
+    第三張卡片：hero 圖是「Gemini 觀察句 + 插圖」合成好的一張圖（見
+    illustration_generator.compose_observation_card()），文字區塊只放
+    四個指標各自的當日細項 + 本月累積估算明細——原本分散在舊版4張指標
+    卡片裡的當日數字，收斂進這裡一起顯示。
     """
     lines = []
-    if observation:
-        lines.append(observation)
 
+    for source_type in ("hot_water", "cold_water", "heat_cooling", "electricity"):
+        data = items.get(source_type)
+        if not data:
+            continue
+        lines.append(
+            f"{data['label']}：{data['latest_value']:.3f}{data['unit']}"
+            f"（約 ${data['daily_cost']:.2f}，{data['latest_date']}）"
+        )
+
+    lines.append("---")
     if total is None:
         lines.append("本月累積估算：資料不足，無法計算")
     else:
@@ -346,7 +379,7 @@ def build_summary_bubble(observation: str | None, total: dict | None) -> dict:
             f"HST ${total['hst']:.2f}"
         )
 
-    return build_flex_bubble("本月摘要", lines)
+    return build_flex_bubble("本月摘要", lines, hero_image_url=conclusion_image_url)
 
 
 def build_gemini_readings(items: dict) -> list[dict]:
@@ -405,6 +438,12 @@ def main() -> None:
         "--max-staleness-days", type=int, default=7,
         help="最新資料超過幾天視為 carma_scraper.py 可能已經故障（預設 7 天）",
     )
+    parser.add_argument("--chart-dir", default=tempfile.gettempdir(), help="圖表/插圖暫存目錄，預設系統暫存目錄")
+    parser.add_argument("--gcs-bucket", default="carmameter_bucket")
+    parser.add_argument(
+        "--gcs-key-path", default=None,
+        help="本機測試用 service account key 檔案路徑；正式環境不要傳，走 ADC（VM 自己的 service account）",
+    )
     args = parser.parse_args()
 
     line_token = args.line_token
@@ -461,11 +500,50 @@ def main() -> None:
 
         total = build_monthly_total(items)
         gemini_readings = build_gemini_readings(items)
-        observation = generate_daily_observation(gemini_key, gemini_readings)
+        observation, mood = generate_daily_observation(gemini_key, gemini_readings)
 
-        summary_bubble = build_summary_bubble(observation, total)
-        item_bubbles = build_bubbles(items)
-        bubbles = [summary_bubble] + item_bubbles
+        run_date = datetime.now().strftime("%Y-%m-%d")
+        os.makedirs(args.chart_dir, exist_ok=True)
+
+        bubbles = []
+
+        water_series = [
+            s for s in (build_chart_series(items, "cold_water"), build_chart_series(items, "hot_water")) if s
+        ]
+        if len(water_series) == 2:
+            water_chart_path = chart_generator.render_dual_line_chart(
+                water_series, os.path.join(args.chart_dir, f"water_{run_date}.png"), title="水表 近7日趨勢"
+            )
+            water_url = gcs_upload.upload_and_sign(
+                water_chart_path, f"charts/water_{run_date}.png", args.gcs_bucket, args.gcs_key_path
+            )
+            bubbles.append(build_water_chart_bubble(water_url))
+        else:
+            print("[WARN] 冷水/熱水資料不齊全，本次報告略過水表圖卡片", file=sys.stderr)
+
+        power_series = [
+            s for s in (build_chart_series(items, "heat_cooling"), build_chart_series(items, "electricity")) if s
+        ]
+        if len(power_series) == 2:
+            power_chart_path = chart_generator.render_dual_line_chart(
+                power_series, os.path.join(args.chart_dir, f"power_{run_date}.png"), title="電力 近7日趨勢"
+            )
+            power_url = gcs_upload.upload_and_sign(
+                power_chart_path, f"charts/power_{run_date}.png", args.gcs_bucket, args.gcs_key_path
+            )
+            bubbles.append(build_power_chart_bubble(power_url))
+        else:
+            print("[WARN] 冷暖氣/日常用電資料不齊全，本次報告略過電力圖卡片", file=sys.stderr)
+
+        mascot_path = os.path.join(args.chart_dir, f"mascot_{run_date}.png")
+        illustration_generator.generate_mascot(mood, mascot_path)
+
+        conclusion_image_path = os.path.join(args.chart_dir, f"conclusion_{run_date}.png")
+        illustration_generator.compose_observation_card(observation, mascot_path, conclusion_image_path)
+        conclusion_image_url = gcs_upload.upload_and_sign(
+            conclusion_image_path, f"charts/conclusion_{run_date}.png", args.gcs_bucket, args.gcs_key_path
+        )
+        bubbles.append(build_conclusion_bubble(items, total, conclusion_image_url))
 
         message = build_flex_carousel_message("CarmaMeterReporter 每日報告", bubbles)
 

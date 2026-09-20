@@ -85,11 +85,16 @@ def push_line_message(access_token: str, to: str, messages: list[dict]) -> None:
     raise LinePushError(r.status_code, body)
 
 
-def build_flex_bubble(title: str, lines: list[str], footer: str | None = None) -> dict:
+def build_flex_bubble(
+    title: str, lines: list[str], footer: str | None = None, hero_image_url: str | None = None
+) -> dict:
     """
-    建一個簡單的 Flex Message bubble：標題 + 多行文字內容。
+    建一個簡單的 Flex Message bubble：標題 + 多行文字內容，可選 hero 圖片。
     Phase 4 的每日簡報可以對每個追蹤項目（電/水/暖氣）各建一個 bubble，
     再用 build_flex_carousel_message() 組成一則可以左右滑動的訊息。
+
+    hero_image_url: 選填，顯示在卡片最上方的圖片（例如圖表或插圖），
+    必須是 HTTPS 網址（LINE 的要求，這裡不主動驗證，呼叫端自己保證）。
     """
     body_contents: list[dict] = [
         {"type": "text", "text": title, "weight": "bold", "size": "lg", "wrap": True},
@@ -116,6 +121,15 @@ def build_flex_bubble(title: str, lines: list[str], footer: str | None = None) -
             "contents": [
                 {"type": "text", "text": footer, "size": "xs", "color": "#999999", "wrap": True}
             ],
+        }
+
+    if hero_image_url:
+        bubble["hero"] = {
+            "type": "image",
+            "url": hero_image_url,
+            "size": "full",
+            "aspectRatio": "20:13",
+            "aspectMode": "cover",
         }
 
     return bubble

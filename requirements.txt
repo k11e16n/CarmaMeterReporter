@@ -1,0 +1,6 @@
+requests==2.34.2
+beautifulsoup4==4.15.0
+google-cloud-storage==3.14.1
+google-cloud-secret-manager==2.30.0
+Pillow==12.3.0
+matplotlib==3.11.2

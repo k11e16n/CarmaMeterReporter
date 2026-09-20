@@ -14,5 +14,19 @@ __pycache__/
 # 但本機測試難免會先用檔案暫存，先排除掉避免不小心 commit 進去）
 .env
 
+# GCP service account key（本機測試用，正式環境走 ADC，這把 key 絕對不能進版控）
+mypixelchatroom-*.json
+
+# 本機測試用的明碼憑證檔案（Secret Manager 的本機備份），裡面有 Gemini/LINE token
+current_config.json
+
+# Irasutoya 插圖庫是抓來的第三方素材，不確定二次散布（尤其 public repo）
+# 是否符合對方使用條款，改成部署後直接在該台機器上跑
+# illustration_pool_refresher.py 產生，不進版控
+assets/irasutoya_pool/
+
+# 本機測試 dry-run 產生的圖表/插圖暫存檔
+dry_run_charts/
+
 # macOS 系統產生的檔案
 .DS_Store
