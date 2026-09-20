@@ -185,13 +185,22 @@ def get_month_stats(conn: sqlite3.Connection, meter_id: str, as_of_date: str) ->
     }
 
 
-def get_recent_daily_series(conn: sqlite3.Connection, meter_id: str, days: int = 7) -> list[tuple[str, float]]:
-    """回傳最近 days 天的每日讀數，依日期升冪排序。跟 get_month_stats() 一樣
-    不過濾 value > 0——0 用量是合理數據，要在趨勢線上顯示成谷底，不能被濾掉。"""
+def get_recent_daily_series(
+    conn: sqlite3.Connection, meter_id: str, as_of_date: str, days: int = 7
+) -> list[tuple[str, float]]:
+    """回傳 as_of_date（含）往前 days 天的每日讀數，依日期升冪排序。跟
+    get_month_stats() 一樣不過濾 value > 0——0 用量是合理數據，要在趨勢線
+    上顯示成谷底，不能被濾掉。
+
+    as_of_date 一定要傳「已經驗證過的最新真實日期」（例如 get_latest_reading()
+    的結果），不能只憑資料庫裡 reading_date 字串排序最大的幾筆：CARMA
+    網站的圖表資料是整月一次吐出來的，還沒發生的未來日期也會被存進資料庫
+    （數值固定是 0），只排序不限制上限的話會把這些未來日期也抓進來。
+    """
     rows = conn.execute(
         "SELECT reading_date, value FROM utility_readings "
-        "WHERE meter_id = ? ORDER BY reading_date DESC LIMIT ?",
-        (meter_id, days),
+        "WHERE meter_id = ? AND reading_date <= ? ORDER BY reading_date DESC LIMIT ?",
+        (meter_id, as_of_date, days),
     ).fetchall()
     rows.reverse()
     return [(reading_date, value) for reading_date, value in rows]
@@ -254,7 +263,7 @@ def build_report_items(conn: sqlite3.Connection) -> dict:
         stats = get_month_stats(conn, meter_id, latest_date)
         cumulative = get_month_cumulative(conn, meter_id, latest_date)
         prev_month_avg = get_previous_month_avg(conn, meter_id, latest_date)
-        daily_series = get_recent_daily_series(conn, meter_id, days=7)
+        daily_series = get_recent_daily_series(conn, meter_id, latest_date, days=7)
         month_num = int(latest_date[5:7])
 
         if source_type in ("hot_water", "cold_water"):
