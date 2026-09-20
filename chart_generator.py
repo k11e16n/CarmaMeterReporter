@@ -7,11 +7,13 @@ daily_report.py 上傳到 GCS 後當 LINE Flex Message 的 hero 圖片使用。
 from __future__ import annotations
 
 import os
+from datetime import datetime
 
 import matplotlib
 
 matplotlib.use("Agg")
 
+import matplotlib.dates as mdates
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 
@@ -31,34 +33,6 @@ METER_COLORS = {
 }
 
 
-def _annotate_latest(ax, series_list: list[dict]) -> None:
-    """在最新一天的位置畫一個合併的紅框白底標註框，內容是兩指標的最新數值。"""
-    lines = []
-    latest_x = None
-    for series in series_list:
-        daily = series["daily"]
-        if not daily:
-            continue
-        date, value = daily[-1]
-        latest_x = date
-        lines.append(f"{series['label']} {value}{series['unit']}")
-
-    if latest_x is None or not lines:
-        return
-
-    ax.annotate(
-        "\n".join(lines),
-        xy=(latest_x, 0),
-        xytext=(10, 10),
-        textcoords="offset points",
-        xycoords=("data", "axes fraction"),
-        va="bottom",
-        ha="left",
-        fontsize=9,
-        bbox=dict(boxstyle="round", fc="white", ec="red", lw=1.5),
-    )
-
-
 def render_dual_line_chart(series_list: list[dict], output_path: str, title: str | None = None) -> str:
     """畫一張圖，包含兩個相關指標各自的近日趨勢實線 + 本月平均虛線。
 
@@ -74,6 +48,11 @@ def render_dual_line_chart(series_list: list[dict], output_path: str, title: str
         output_path: 輸出 PNG 的路徑，母目錄需已存在。
         title: 圖表標題，選填。
 
+    兩個指標各自「最新有效日期」可能差一兩天（CARMA 各分頁回報進度本來就
+    不一致），所以 x 軸一定要用真正的日期型別（不能用日期字串），不然
+    matplotlib 會把日期字串當成分類座標，兩條線的日期類別合併順序一亂，
+    線跟面積填色的位置就會跑掉。
+
     Returns:
         str: output_path，方便串接後續上傳流程。
     """
@@ -81,7 +60,7 @@ def render_dual_line_chart(series_list: list[dict], output_path: str, title: str
 
     for series in series_list:
         color = METER_COLORS[series["source_type"]]
-        dates = [d for d, _ in series["daily"]]
+        dates = [datetime.strptime(d, "%Y-%m-%d").date() for d, _ in series["daily"]]
         values = [v for _, v in series["daily"]]
 
         ax.plot(dates, values, color=color, linewidth=2, label=series["label"], zorder=3)
@@ -99,12 +78,21 @@ def render_dual_line_chart(series_list: list[dict], output_path: str, title: str
 
         if dates:
             ax.plot(dates[-1], values[-1], marker="o", color="red", markersize=6, zorder=5)
-
-    _annotate_latest(ax, series_list)
+            ax.annotate(
+                f"{series['label']} {values[-1]}{series['unit']}",
+                xy=(dates[-1], values[-1]),
+                xytext=(10, 10),
+                textcoords="offset points",
+                fontsize=9,
+                bbox=dict(boxstyle="round", fc="white", ec=color, lw=1.5),
+                zorder=6,
+            )
 
     if title:
         ax.set_title(title)
     ax.legend(loc="upper left", fontsize=8, framealpha=0.9)
+    ax.xaxis.set_major_locator(mdates.DayLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
     ax.tick_params(axis="x", rotation=45)
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
