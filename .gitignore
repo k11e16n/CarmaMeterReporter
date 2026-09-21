@@ -28,5 +28,9 @@ assets/irasutoya_pool/
 # 本機測試 dry-run 產生的圖表/插圖暫存檔
 dry_run_charts/
 
+# 給 Claude 看的專案現況筆記（session 之間接續進度用）——只留本機，
+# repo 是 public 的，不需要讓外人看到內部決策過程/待辦細節
+CLAUDE.md
+
 # macOS 系統產生的檔案
 .DS_Store
