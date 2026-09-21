@@ -50,6 +50,11 @@ _CANVAS_SIZE = (800, 520)
 _MASCOT_BAND_RATIO = 0.35  # 插圖佔畫面的高度比例（放在上/下其中一條橫帶裡）
 _PADDING = 24
 
+# Gemini 沒給觀察句時（呼叫失敗，或成功但內容剛好是空字串）的預設文案，
+# 語氣配合現有人設——寧可顯示這句罐頭話，也不要讓卡片變成「插圖放大、
+# 什麼都沒有」看起來像壞掉。
+_FALLBACK_OBSERVATION = "今天的碎念請假中，數字自己會說話。"
+
 
 def generate_mascot(mood: str, output_path: str) -> str:
     """從 POOL_DIR/<mood>/ 隨機挑一張圖，去背後存成 output_path。
@@ -64,6 +69,7 @@ def generate_mascot(mood: str, output_path: str) -> str:
             raise FileNotFoundError(f"圖庫是空的，尚未執行過 illustration_pool_refresher.py：{mood}")
 
         chosen = random.choice(candidates)
+        print(f"[INFO] illustration_generator: mood={mood} 挑到 {chosen}", file=sys.stderr)
         cutout = composite_sticker.cutout_sticker(chosen)
         cutout.save(output_path)
         return output_path
@@ -108,24 +114,16 @@ def compose_observation_card(observation: str | None, mascot_path: str, output_p
     縮小放在四個角落隨機一個當裝飾。用「畫面上/下各留一條橫帶給插圖」的
     版面，不管插圖比例、觀察句長度怎麼變，插圖跟文字都不會互相重疊。
 
-    observation 是 None（Gemini 失敗）時，不畫文字，插圖直接置中放大。
+    observation 是 None（Gemini 呼叫失敗，或成功但內容剛好是空字串）時，
+    改用固定的預設文案（_FALLBACK_OBSERVATION），版面跟正常情況完全一樣
+    ——不能因為沒有觀察句，就讓插圖直接放大鋪滿整張圖：萬一那張插圖本身
+    構圖不適合單獨放大（例如漏網的多格合輯圖），畫面會像壞掉一樣。
     """
     canvas_w, canvas_h = _CANVAS_SIZE
     canvas = Image.new("RGB", (canvas_w, canvas_h), "white")
     mascot = Image.open(mascot_path).convert("RGBA")
 
-    if not observation:
-        max_h = canvas_h - 2 * _PADDING
-        max_w = canvas_w - 2 * _PADDING
-        scale = min(max_h / mascot.height, max_w / mascot.width)
-        resized = mascot.resize(
-            (max(1, int(mascot.width * scale)), max(1, int(mascot.height * scale))), Image.LANCZOS
-        )
-        canvas.paste(
-            resized, ((canvas_w - resized.width) // 2, (canvas_h - resized.height) // 2), resized
-        )
-        canvas.save(output_path)
-        return output_path
+    observation = observation or _FALLBACK_OBSERVATION
 
     corner = random.choice(["top-left", "top-right", "bottom-left", "bottom-right"])
     is_top = corner.startswith("top")

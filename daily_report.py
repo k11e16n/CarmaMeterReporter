@@ -524,6 +524,7 @@ def main() -> None:
         total = build_monthly_total(items)
         gemini_readings = build_gemini_readings(items)
         observation, mood = generate_daily_observation(gemini_key, gemini_readings)
+        print(f"[INFO] mood={mood}, observation_is_none={observation is None}", file=sys.stderr)
 
         run_date = datetime.now().strftime("%Y-%m-%d")
         os.makedirs(args.chart_dir, exist_ok=True)

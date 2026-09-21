@@ -36,6 +36,12 @@ SEARCH_URL = "https://www.irasutoya.com/search"
 _THUMBNAIL_PATTERN = re.compile(r'bp_thumbnail_resize\("([^"]+)","([^"]*)"\)')
 _HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
 
+# 這些關鍵字出現在標題裡，通常代表「一張圖裡塞了多個表情/圖案」的合輯圖
+# （例如「いろいろな表情の猫のイラスト」「3種類の顔文字セット」），不適合
+# 當單一 hero 插圖放大顯示——這份清單是不完全的關鍵字比對，降低漏網機率，
+# 不是 100% 準確的判斷，圖庫本身「完全自動、不人工審核」的設計沒有改變。
+_COMPILATION_TITLE_KEYWORDS = ["いろいろな表情", "パターン", "種類", "セット", "詰め合わせ"]
+
 
 def _search_candidates(keyword: str, max_results: int = 20) -> list[tuple[str, str]]:
     """打 irasutoya 的搜尋頁面，回傳 (原始大圖網址, 標題) 候選清單。"""
@@ -48,8 +54,7 @@ def _search_candidates(keyword: str, max_results: int = 20) -> list[tuple[str, s
     resp.raise_for_status()
     candidates = []
     for thumb_url, title in _THUMBNAIL_PATTERN.findall(resp.text):
-        if "いろいろな表情" in title:
-            # 這種標題是「一張圖裡塞多種表情」的合輯圖，不適合當單一 hero 插圖
+        if any(kw in title for kw in _COMPILATION_TITLE_KEYWORDS):
             continue
         full_url = thumb_url.replace("/s72-c/", "/s1600/")
         candidates.append((full_url, title))
@@ -86,6 +91,11 @@ def refresh_pool(mood: str, keywords: list[str] | None = None, pool_size: int = 
         out_path = os.path.join(mood_dir, f"{saved:02d}.png")
         with open(out_path, "wb") as f:
             f.write(resp.content)
+        # 標題存成同名 .txt（sidecar），事後如果報告出了問題，可以直接
+        # 對應 illustration_generator.py 印出來的圖檔路徑，打開看是哪張圖、
+        # 原始標題是什麼，不用重新爬一次或一張一張肉眼檢查。
+        with open(os.path.join(mood_dir, f"{saved:02d}.txt"), "w") as f:
+            f.write(title)
         print(f"[OK] {mood}: {title} -> {out_path}")
         saved += 1
 
