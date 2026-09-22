@@ -26,7 +26,7 @@ def upload_and_sign(
     blob_name: str,
     bucket_name: str = "carmameter_bucket",
     key_path: str | None = None,
-    expiration_hours: int = 6,
+    expiration_hours: int = 72,
 ) -> str:
     """上傳本機檔案到 GCS，回傳一個 v4 簽章的 HTTPS URL（可直接餵給
     build_flex_bubble() 的 hero_image_url 參數）。"""
