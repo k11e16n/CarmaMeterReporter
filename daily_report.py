@@ -346,42 +346,64 @@ def build_chart_series(items: dict, source_type: str) -> dict | None:
 # 組 LINE 訊息
 # ---------------------------------------------------------------------------
 
-def build_water_chart_bubble(chart_url: str) -> dict:
-    return build_flex_bubble("水表報告", ["冷水 + 熱水　近7日趨勢"], hero_image_url=chart_url)
+def _daily_value_lines(items: dict, source_types: tuple[str, ...]) -> list[str]:
+    """卡1/卡2共用：每個指標的當日用量+日期+本月平均，圖表過期後這行文字
+    是唯一還查得到「那天實際數值」的地方。"""
+    lines = []
+    for source_type in source_types:
+        data = items.get(source_type)
+        if not data:
+            continue
+        avg_part = (
+            f"　本月平均 {data['stats']['avg']:.3g}{data['unit']}" if data["stats"] else ""
+        )
+        lines.append(
+            f"{data['label']}：{data['latest_value']:.3f}{data['unit']}"
+            f"（{data['latest_date']}）{avg_part}"
+        )
+    return lines
 
 
-def build_power_chart_bubble(chart_url: str) -> dict:
-    return build_flex_bubble("電力報告", ["冷暖氣 + 日常用電　近7日趨勢"], hero_image_url=chart_url)
+def build_water_chart_bubble(chart_url: str, items: dict) -> dict:
+    lines = ["冷水 + 熱水　近7日趨勢"] + _daily_value_lines(items, ("cold_water", "hot_water"))
+    return build_flex_bubble("水表報告", lines, hero_image_url=chart_url)
+
+
+def build_power_chart_bubble(chart_url: str, items: dict) -> dict:
+    lines = ["冷暖氣 + 日常用電　近7日趨勢"] + _daily_value_lines(items, ("heat_cooling", "electricity"))
+    return build_flex_bubble("電力報告", lines, hero_image_url=chart_url)
 
 
 def build_conclusion_bubble(items: dict, total: dict | None, conclusion_image_url: str) -> dict:
     """
     第三張卡片：hero 圖是「Gemini 觀察句 + 插圖」合成好的一張圖（見
-    illustration_generator.compose_observation_card()），文字區塊只放
-    四個指標各自的當日細項 + 本月累積估算明細——原本分散在舊版4張指標
-    卡片裡的當日數字，收斂進這裡一起顯示。
+    illustration_generator.compose_observation_card()），文字區塊放每個
+    指標的月累積用量 + 該指標的預估費用，最後是總計——當日用量+本月平均
+    已經移到卡1/卡2，這裡不重複顯示。
     """
     lines = []
+
+    meter_cost_keys = {
+        "hot_water": lambda t: t["hot_water"],
+        "cold_water": lambda t: t["cold_water"],
+        "heat_cooling": lambda t: t["heat_cooling"],
+        "electricity": lambda t: t["electricity_after_rebate"] + t["electricity_regulatory"],
+    }
 
     for source_type in ("hot_water", "cold_water", "heat_cooling", "electricity"):
         data = items.get(source_type)
         if not data:
             continue
-        lines.append(
-            f"{data['label']}：{data['latest_value']:.3f}{data['unit']}"
-            f"（約 ${data['daily_cost']:.2f}，{data['latest_date']}）"
-        )
+        cost_part = ""
+        if total is not None:
+            cost_part = f"，預估 ${meter_cost_keys[source_type](total):.2f}"
+        lines.append(f"{data['label']}：累積 {data['cumulative']:.3f}{data['unit']}{cost_part}")
 
     lines.append("---")
     if total is None:
         lines.append("本月累積估算：資料不足，無法計算")
     else:
-        lines.append(f"本月累積估算：${total['total']:.2f}")
-        lines.append(
-            f"電費 ${total['electricity_after_rebate'] + total['electricity_regulatory']:.2f} ｜ "
-            f"水費 ${total['cold_water'] + total['hot_water']:.2f} ｜ "
-            f"暖氣 ${total['heat_cooling']:.2f}"
-        )
+        lines.append(f"本月累積估算總計：${total['total']:.2f}")
         lines.append(
             f"Delivery ${total['delivery']:.2f} ｜ "
             f"稅費附加 ${total['tax_recovery']:.2f} ｜ "
@@ -542,7 +564,7 @@ def main() -> None:
                 water_chart_path, f"charts/water_{run_date}.png", args.gcs_bucket, args.gcs_key_path
             )
             _cleanup_local_file(water_chart_path)
-            bubbles.append(build_water_chart_bubble(water_url))
+            bubbles.append(build_water_chart_bubble(water_url, items))
         else:
             print("[WARN] 冷水/熱水資料不齊全，本次報告略過水表圖卡片", file=sys.stderr)
 
@@ -557,7 +579,7 @@ def main() -> None:
                 power_chart_path, f"charts/power_{run_date}.png", args.gcs_bucket, args.gcs_key_path
             )
             _cleanup_local_file(power_chart_path)
-            bubbles.append(build_power_chart_bubble(power_url))
+            bubbles.append(build_power_chart_bubble(power_url, items))
         else:
             print("[WARN] 冷暖氣/日常用電資料不齊全，本次報告略過電力圖卡片", file=sys.stderr)
 
