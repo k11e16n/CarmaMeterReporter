@@ -40,11 +40,13 @@ LATEST_BILL_DATE 這行註解，方便之後回頭查是從哪張帳單抄的。
 from __future__ import annotations
 
 # --- 抄自最新一期帳單，收到新帳單時記得更新這三個值跟下面的日期 ---
-# LATEST_BILL_DATE = 2026-08-27（帳單週期 06/30-07/31/2026）
-DELIVERY_FLAT = 46.00         # Toronto Hydro Delivery，沒有公式，純粹抄最新帳單
-HEAT_COOLING_RATE = 0.080190  # 同上，沒有公式
-HOT_WATER_RATE = 8.441708     # 同上——五、六月是 8.607438，七月變成這個值，
-                               # 不是穩定公式，跟 Delivery/Heat 歸同一類
+# LATEST_BILL_DATE = 2026-09-29（帳單週期 07/31-08/31/2026）
+# 八月驗證：用這組費率重算，跟帳單 $87.78 只差 $0.005，公式結構連續第四個月驗證通過。
+# 同時也驗證了「不更新的代價」：八月初沿用七月舊費率會把估算算貴 $5.04（5.7%），
+# 證實 Delivery/Heat 費率不是緩慢漂移，是每月會有感變動，這個維護習慣不能省。
+DELIVERY_FLAT = 40.86          # Toronto Hydro Delivery，沒有公式，純粹抄最新帳單
+HEAT_COOLING_RATE = 0.063310   # 同上，沒有公式（七月 0.080190 → 八月降回這個值，不是單向趨勢）
+HOT_WATER_RATE = 8.441708      # 跟七月一樣沒變，五、六月是 8.607438
 
 # --- 已驗證的公式，不用隨帳單更新 ---
 COLD_WATER_RATE = 7.030200     # 三張帳單都一致，可以放心當常數
@@ -125,29 +127,28 @@ def monthly_electricity_cost_with_rebate(cumulative_kwh: float, month: int) -> d
     Rebate 的計算基礎是 Tier1電費 + Delivery + Regulatory（用六月帳單
     精確驗證過：0.235 × (42.12+45.26+1.93) = 20.99，跟帳單一致）。
 
-    已知限制：這個公式是用「完整一個月」的帳單驗證出來的，Delivery 是
-    整月固定金額。月初資料量還很小時（累積用電量低），把全額 Delivery
-    套進 rebate 基礎會讓 rebate 金額大過當時還很小的 tier 電費，算出
-    負值——這不是資料異常，是公式套用時機（月初 vs 月底）造成的數學
-    結果，跟月底帳單完整時算出來的正確答案不矛盾。這裡做防護歸零，
-    避免「本月累積估算」在月初顯示不合理的負電費。
+    已知限制（不是bug，是帳單本身的結構）：實際帳單裡，回饋金額是從整張
+    帳單的總金額扣，不是只從電費這一項扣——電費小計本身完全不受回饋影響。
+    這代表 after_rebate（tier_charge - rebate）在月初累積電量還小時，合理
+    地會是負值，這只是「回饋折抵」這個中間量的正常結果，不代表電費本身
+    異常，呼叫端加總 total 時要用這個真實值（可能為負），不能先歸零——
+    先歸零會讓 total 少扣一部分回饋，算出來的總計會比真實帳單還高。
+    `after_rebate_display` 是專門給畫面顯示用的版本（歸零成 $0），不要
+    拿去算總計。
     """
     threshold = electricity_threshold_for_month(month)
     tier_charge = electricity_tiered_charge(cumulative_kwh, threshold)
     regulatory = regulatory_charge(cumulative_kwh)
     rebate = (tier_charge + DELIVERY_FLAT + regulatory) * ELECTRICITY_REBATE_RATE
     after_rebate = tier_charge - rebate
-    clamped = after_rebate < 0
-    if clamped:
-        after_rebate = 0.0
 
     return {
         "tier_charge": tier_charge,
         "regulatory": regulatory,
         "rebate": rebate,
-        "after_rebate": after_rebate,
-        "clamped": clamped,  # 純資料旗標，讓呼叫端決定要不要記 log——這支
-                              # 檔案本身不做任何 I/O，見檔案開頭說明
+        "after_rebate": after_rebate,  # 真實值，可能為負，total 要用這個
+        "after_rebate_display": max(0.0, after_rebate),  # 畫面顯示專用
+        "rebate_exceeds_charge": after_rebate < 0,  # 純資料旗標，給呼叫端決定要不要記 log
     }
 
 
@@ -181,7 +182,8 @@ def monthly_total_estimate(
         "electricity_regulatory": elec["regulatory"],
         "electricity_rebate": elec["rebate"],
         "electricity_after_rebate": elec["after_rebate"],
-        "electricity_rebate_clamped": elec["clamped"],
+        "electricity_after_rebate_display": elec["after_rebate_display"],
+        "electricity_rebate_exceeds_charge": elec["rebate_exceeds_charge"],
         "cold_water": cold_water,
         "hot_water": hot_water,
         "heat_cooling": heat_cooling,

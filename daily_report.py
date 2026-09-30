@@ -317,10 +317,10 @@ def build_monthly_total(items: dict) -> dict | None:
         month=items["electricity"]["month_num"],
     )
 
-    if total.get("electricity_rebate_clamped"):
+    if total.get("electricity_rebate_exceeds_charge"):
         print(
-            "[INFO] 月初累積電費被 rebate 扣過頭變成負值，已歸零"
-            "（正常現象，月初資料量還小時的數學結果，不是異常資料）",
+            "[INFO] 月初回饋金額大於電費本身，卡3「日常用電」單項顯示為 $0.00"
+            "（正常現象，總計仍然正確扣除完整回饋金額，不是異常資料）",
             file=sys.stderr,
         )
 
@@ -387,7 +387,7 @@ def build_conclusion_bubble(items: dict, total: dict | None, conclusion_image_ur
         "hot_water": lambda t: t["hot_water"],
         "cold_water": lambda t: t["cold_water"],
         "heat_cooling": lambda t: t["heat_cooling"],
-        "electricity": lambda t: t["electricity_after_rebate"] + t["electricity_regulatory"],
+        "electricity": lambda t: t["electricity_after_rebate_display"] + t["electricity_regulatory"],
     }
 
     for source_type in ("hot_water", "cold_water", "heat_cooling", "electricity"):
