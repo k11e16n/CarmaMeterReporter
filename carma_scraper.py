@@ -66,6 +66,12 @@ RETRY_BACKOFF_SECONDS = 3
 # 換月最多嘗試幾次（正常情況下每天執行只會差 0~1 個月，設 3 純粹是防呆上限）
 MAX_MONTH_SWITCHES = 3
 
+# 每月前幾天要順便回頭重抓上個月。CARMA 資料有 2-3 天延遲（電費常再多一天），
+# 上個月最後幾天的真實值要到這個月初才會出現，只抓當月的話會永遠停在 0 佔位值
+# （2026-09 實際發生過：9/28 電、9/29、9/30 全部漏掉）。週末的估計值實測是永久的，
+# 不會之後才被修正，所以不需要更長的窗口，7 天是留給延遲的緩衝。
+PREV_MONTH_LOOKBACK_DAYS = 7
+
 DEFAULT_DB_PATH = "carma_readings.db"
 
 
@@ -416,6 +422,53 @@ def switch_month(session: requests.Session, hidden_fields: dict) -> tuple[str | 
     return chart_js, new_fields, disabled
 
 
+def is_prev_month_button_disabled(delta: dict) -> bool:
+    """已經到最舊的可查詢月份時，網站會把 prevMonth_btn 標成 disabled。"""
+    panel_html = delta.get(("updatePanel", "UpdatePanel"), "")
+    return bool(re.search(r'name="prevMonth_btn"[^>]*disabled', panel_html))
+
+
+def switch_prev_month(session: requests.Session, hidden_fields: dict) -> tuple[str | None, dict, bool]:
+    """
+    按一次 Prev Month。這是跟 switch_month()（Next Month）對稱的操作，
+    一樣是傳統 submit 按鈕語意，不是 __doPostBack。
+
+    回傳 (目前 active 分頁在新月份的 chart js 或 None, 更新後的 hidden_fields,
+    是否已經到最舊月份)。
+    """
+    ajax_headers = {
+        "X-MicrosoftAjax": "Delta=true",
+        "X-Requested-With": "XMLHttpRequest",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+    }
+    payload = {
+        "ToolkitScriptManager1": "UpdatePanel|prevMonth_btn",
+        "ToolkitScriptManager1_HiddenField": "",
+        "HiddenField": "",
+        "tabMeters_ClientState": hidden_fields.get("tabMeters_ClientState", ""),
+        "__VIEWSTATE": hidden_fields["__VIEWSTATE"],
+        "__VIEWSTATEGENERATOR": hidden_fields["__VIEWSTATEGENERATOR"],
+        "__EVENTVALIDATION": hidden_fields["__EVENTVALIDATION"],
+        "__ASYNCPOST": "true",
+        "prevMonth_btn": "Prev Month",
+    }
+
+    r = session.post(f"{BASE}/graphing.aspx", data=payload, headers=ajax_headers)
+    r.raise_for_status()
+
+    delta = parse_ms_ajax_delta(r.content)
+    chart_js = extract_chart_js_from_delta(delta)
+    disabled = is_prev_month_button_disabled(delta)
+
+    new_fields = {
+        "__VIEWSTATE": delta.get(("hiddenField", "__VIEWSTATE"), hidden_fields["__VIEWSTATE"]),
+        "__VIEWSTATEGENERATOR": delta.get(("hiddenField", "__VIEWSTATEGENERATOR"), hidden_fields["__VIEWSTATEGENERATOR"]),
+        "__EVENTVALIDATION": delta.get(("hiddenField", "__EVENTVALIDATION"), hidden_fields["__EVENTVALIDATION"]),
+        "tabMeters_ClientState": delta.get(("hiddenField", "tabMeters_ClientState"), hidden_fields.get("tabMeters_ClientState", "")),
+    }
+    return chart_js, new_fields, disabled
+
+
 # ---------------------------------------------------------------------------
 # Highcharts 設定字串解析
 # ---------------------------------------------------------------------------
@@ -590,6 +643,7 @@ def fetch_all_meters(service_address: str, account_number: str) -> list[dict]:
     tab0_chart_js, hidden_fields = ensure_current_month(session, hidden_fields, tab0_chart_js)
 
     charts = []
+    active_tab = 0  # 登入後預設 active 的分頁
     for idx, meter_id in enumerate(TAB_METER_IDS):
         if TAB_SOURCE_TYPES.get(meter_id) is None:
             # Phase 1 確認不追蹤的分頁（T0005518），連請求都不用送
@@ -604,6 +658,7 @@ def fetch_all_meters(service_address: str, account_number: str) -> list[dict]:
             if chart_js is None:
                 # 這個分頁重試後仍失敗，記錄下來但不中斷其他分頁的抓取
                 continue
+            active_tab = idx
 
         chart = _parse_chart_from_js(chart_js, idx, meter_id)
         if chart is None:
@@ -612,6 +667,66 @@ def fetch_all_meters(service_address: str, account_number: str) -> list[dict]:
         chart["meter_id"] = meter_id
         charts.append(chart)
 
+    if datetime.now().day <= PREV_MONTH_LOOKBACK_DAYS:
+        # 上個月放前面、當月放後面：main() 依序 UPSERT，重疊的日期以後寫的為準。
+        # 每月圖表會多吐「下個月 1 號」的 0 佔位值（實測十月圖表含 11/01），
+        # 上個月的圖如果也帶了當月 1 號，要讓當月圖表的真實值蓋過它，不能反過來。
+        charts = _fetch_previous_month(session, hidden_fields, active_tab) + charts
+
+    return charts
+
+
+def _fetch_previous_month(session: requests.Session, hidden_fields: dict, active_tab: int) -> list[dict]:
+    """
+    按一次 Prev Month，把上個月所有追蹤分頁重抓一遍，補上「上個月最後幾天，
+    當時還是 0 佔位值」的資料（見 PREV_MONTH_LOOKBACK_DAYS）。
+
+    操作順序跟 backfill_history.py 實際跑過驗證的一樣：Prev Month 會重新
+    渲染「目前 active 的分頁」，所以那張圖直接算 active_tab 的；其他分頁
+    再逐一切過去（切到非 active 的分頁才是真正的索引變化，才會觸發渲染）。
+
+    這只是補資料，任何一步失敗都只印 WARN、回傳已經拿到的部分，不能影響
+    當月資料的寫入。
+    """
+    today = datetime.now()
+    expected = (12, today.year - 1) if today.month == 1 else (today.month - 1, today.year)
+
+    def accept(chart_js: str | None, idx: int, meter_id: str) -> dict | None:
+        if chart_js is None:
+            print(f"[WARN] 上個月分頁 {idx} ({meter_id}) 沒有拿到資料，略過", file=sys.stderr)
+            return None
+        chart = _parse_chart_from_js(chart_js, idx, meter_id)
+        if chart is None:
+            return None
+        got = parse_month_year_from_title(chart.get("title") or "")
+        if got != expected:
+            print(
+                f"[WARN] 上個月分頁 {idx} ({meter_id}) 標題月份跟預期不同"
+                f"（預期 {expected}，實際 {chart.get('title')!r}），略過不存",
+                file=sys.stderr,
+            )
+            return None
+        chart["meter_id"] = meter_id
+        return chart
+
+    charts = []
+    try:
+        active_chart_js, hidden_fields, _ = switch_prev_month(session, hidden_fields)
+        chart = accept(active_chart_js, active_tab, TAB_METER_IDS[active_tab])
+        if chart is not None:
+            charts.append(chart)
+
+        for idx, meter_id in enumerate(TAB_METER_IDS):
+            if TAB_SOURCE_TYPES.get(meter_id) is None or idx == active_tab:
+                continue
+            chart_js, hidden_fields = switch_tab_with_retry(session, hidden_fields, idx, meter_id)
+            chart = accept(chart_js, idx, meter_id)
+            if chart is not None:
+                charts.append(chart)
+    except requests.RequestException as e:
+        print(f"[WARN] 回頭抓上個月時請求失敗，只保留已拿到的 {len(charts)} 個分頁：{e}", file=sys.stderr)
+
+    print(f"[INFO] 回頭重抓上個月 {expected[1]}/{expected[0]:02d}：成功 {len(charts)} 個分頁", file=sys.stderr)
     return charts
 
 

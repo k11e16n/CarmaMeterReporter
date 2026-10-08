@@ -37,7 +37,7 @@ CARMA 網站 --(carma_scraper.py 爬蟲)--> SQLite (utility_readings)
 
 | 檔案 | 用途 |
 |---|---|
-| `carma_scraper.py` | 登入 CARMA 網站，解析 Highcharts 資料，寫入 SQLite |
+| `carma_scraper.py` | 登入 CARMA 網站，解析 Highcharts 資料，寫入 SQLite。每月前 7 天（`PREV_MONTH_LOOKBACK_DAYS`）會順便回頭重抓上個月，補上月底因為 2-3 天延遲還是 0 佔位值的那幾天 |
 | `backfill_history.py` | 一次性歷史資料回補（往回翻月份），重用 carma_scraper.py 的函式，手動執行 |
 | `report_calc.py` | 費用估算公式（分級電價、政府回饋、水費、冷暖氣費），純函式無 I/O |
 | `gemini_summary.py` | 呼叫 Gemini，回傳結構化 JSON `{observation, mood}` |

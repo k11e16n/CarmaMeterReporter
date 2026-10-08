@@ -32,76 +32,24 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 
-import requests
-
 from carma_scraper import (
-    BASE,
     TAB_METER_IDS,
     TAB_SOURCE_TYPES,
     ensure_current_month,
-    extract_chart_js_from_delta,
     extract_chart_js_from_full_page,
     find_balanced_braces,
     init_db,
     login,
     parse_chart,
     parse_month_year_from_title,
-    parse_ms_ajax_delta,
     save_chart_data,
+    switch_prev_month,
     switch_tab_with_retry,
 )
 
 MAX_MONTHS_BACK = 36  # 防呆上限，避免網站行為跟預期不同時無限迴圈
-
-
-def is_prev_month_button_disabled(delta: dict) -> bool:
-    """已經到最舊的可查詢月份時，網站會把 prevMonth_btn 標成 disabled。"""
-    panel_html = delta.get(("updatePanel", "UpdatePanel"), "")
-    return bool(re.search(r'name="prevMonth_btn"[^>]*disabled', panel_html))
-
-
-def switch_prev_month(session: requests.Session, hidden_fields: dict) -> tuple[str | None, dict, bool]:
-    """
-    按一次 Prev Month。這是跟 carma_scraper.py 的 switch_month()（Next Month）
-    對稱的操作，一樣是傳統 submit 按鈕語意，不是 __doPostBack。
-
-    回傳 (目前 active 分頁在新月份的 chart js 或 None, 更新後的 hidden_fields,
-    是否已經到最舊月份)。
-    """
-    ajax_headers = {
-        "X-MicrosoftAjax": "Delta=true",
-        "X-Requested-With": "XMLHttpRequest",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-    }
-    payload = {
-        "ToolkitScriptManager1": "UpdatePanel|prevMonth_btn",
-        "ToolkitScriptManager1_HiddenField": "",
-        "HiddenField": "",
-        "tabMeters_ClientState": hidden_fields.get("tabMeters_ClientState", ""),
-        "__VIEWSTATE": hidden_fields["__VIEWSTATE"],
-        "__VIEWSTATEGENERATOR": hidden_fields["__VIEWSTATEGENERATOR"],
-        "__EVENTVALIDATION": hidden_fields["__EVENTVALIDATION"],
-        "__ASYNCPOST": "true",
-        "prevMonth_btn": "Prev Month",
-    }
-
-    r = session.post(f"{BASE}/graphing.aspx", data=payload, headers=ajax_headers)
-    r.raise_for_status()
-
-    delta = parse_ms_ajax_delta(r.content)
-    chart_js = extract_chart_js_from_delta(delta)
-    disabled = is_prev_month_button_disabled(delta)
-
-    new_fields = {
-        "__VIEWSTATE": delta.get(("hiddenField", "__VIEWSTATE"), hidden_fields["__VIEWSTATE"]),
-        "__VIEWSTATEGENERATOR": delta.get(("hiddenField", "__VIEWSTATEGENERATOR"), hidden_fields["__VIEWSTATEGENERATOR"]),
-        "__EVENTVALIDATION": delta.get(("hiddenField", "__EVENTVALIDATION"), hidden_fields["__EVENTVALIDATION"]),
-        "tabMeters_ClientState": delta.get(("hiddenField", "tabMeters_ClientState"), hidden_fields.get("tabMeters_ClientState", "")),
-    }
-    return chart_js, new_fields, disabled
 
 
 def _save_if_valid(conn, idx: int, chart_js: str | None) -> None:
