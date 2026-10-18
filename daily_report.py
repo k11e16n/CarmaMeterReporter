@@ -57,6 +57,10 @@ METERS = {
     "T0005287": ("日常用電", "electricity"),
 }
 
+# 0 用量是常態的指標（Ken 很少開冷暖氣）：最新日期不能用「最後一筆 > 0」
+# 判斷，改用其他指標的最新日期當上限，見 build_report_items()
+ZERO_IS_VALID_SOURCE_TYPES = {"heat_cooling"}
+
 # source_type -> meter_id 反查，report_state 用 meter_id 當 key
 SOURCE_TYPE_TO_METER_ID = {source_type: meter_id for meter_id, (_, source_type) in METERS.items()}
 
@@ -162,6 +166,15 @@ def get_latest_reading(conn: sqlite3.Connection, meter_id: str) -> tuple[str, fl
     return row
 
 
+def get_reading_value(conn: sqlite3.Connection, meter_id: str, reading_date: str) -> float:
+    """單日讀數；那天沒有資料列時視為 0。"""
+    row = conn.execute(
+        "SELECT value FROM utility_readings WHERE meter_id = ? AND reading_date = ?",
+        (meter_id, reading_date),
+    ).fetchone()
+    return row[0] if row is not None and row[0] is not None else 0.0
+
+
 def get_month_stats(conn: sqlite3.Connection, meter_id: str, as_of_date: str) -> dict | None:
     """月初到 as_of_date（含）的平均/最高/最低，包含真實的 0 用量天。"""
     month_start = as_of_date[:8] + "01"
@@ -252,14 +265,30 @@ def build_report_items(conn: sqlite3.Connection) -> dict:
     回傳 {source_type: {label, unit, latest_date, latest_value, stats,
     cumulative, daily_cost, month_num}}，沒有資料的項目不會出現在結果裡。
     """
+    latest_by_meter = {meter_id: get_latest_reading(conn, meter_id) for meter_id in METERS}
+    reference_dates = [
+        latest[0]
+        for meter_id, latest in latest_by_meter.items()
+        if latest is not None and METERS[meter_id][1] not in ZERO_IS_VALID_SOURCE_TYPES
+    ]
+
     items = {}
     for meter_id, (label, source_type) in METERS.items():
-        latest = get_latest_reading(conn, meter_id)
+        latest = latest_by_meter[meter_id]
         if latest is None:
             print(f"[WARN] {label} ({meter_id}) 沒有任何有效資料，本次報告略過", file=sys.stderr)
             continue
 
         latest_date, latest_value, unit = latest
+        if source_type in ZERO_IS_VALID_SOURCE_TYPES and reference_dates:
+            # 冷暖氣常常整段時間都是真實的 0，get_latest_reading() 的 value > 0
+            # 會讓它的「今天」卡在最後一次有用的日子。改用其他指標最早的最新日期
+            # 當上限——其他指標確定已經更新到這天，這天的 0 視為真實值。
+            # 取最早而不是最晚，避免把還沒更新的佔位 0 當成真實 0。
+            reference_date = min(reference_dates)
+            if reference_date > latest_date:
+                latest_date = reference_date
+                latest_value = get_reading_value(conn, meter_id, latest_date)
         stats = get_month_stats(conn, meter_id, latest_date)
         cumulative = get_month_cumulative(conn, meter_id, latest_date)
         prev_month_avg = get_previous_month_avg(conn, meter_id, latest_date)
@@ -425,6 +454,7 @@ def build_gemini_readings(items: dict) -> list[dict]:
                 "unit": data["unit"],
                 "today_date": data["latest_date"],
                 "today_value": data["latest_value"],
+                "today_cost": round(data["daily_cost"], 2),
                 "month_avg": round(stats["avg"], 3),
                 "month_max": stats["max"],
                 "month_max_date": stats["max_date"],

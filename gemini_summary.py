@@ -46,6 +46,9 @@ _SYSTEM_INSTRUCTION = (
     "（例如『這是在家開三溫暖膩』『這個月是家裡開演唱會嗎』這種語氣），"
     "但吐槽要緊扣數字本身的變化幅度，不要編造你看不到的使用情境"
     "（例如猜測是誰在用、在家做了什麼事），除非數據明顯支持這個推論。"
+    "冷暖氣是例外：使用者很少開，常常整個月每天都是 0，平均接近 0 時偶爾用一次，"
+    "算倍數一定很誇張但沒有意義——冷暖氣請看絕對用量跟預估費用判斷，"
+    "只要當日費用只有幾毛錢，就不算偏高，不要拿它吐槽，mood 也不要因此選 high。"
     "如果數字都在正常範圍，用輕鬆調皮的語氣講一句安心的話就好，不用勉強找梗、不用硬酸。"
     "只回傳一個 JSON 物件，格式為 "
     '{"observation": "<一句吐槽或稱讚，不加引號或前綴>", "mood": "high"|"normal"|"low"}。'
@@ -62,9 +65,12 @@ def _format_readings_for_prompt(readings: list[dict]) -> str:
         prev_month_part = (
             f"，上月平均 {r['prev_month_avg']}" if r.get("prev_month_avg") is not None else ""
         )
+        cost_part = (
+            f"（預估 ${r['today_cost']:.2f}）" if r.get("today_cost") is not None else ""
+        )
         lines.append(
             f"- {r['label']}（單位：{r['unit']}）："
-            f"今日（{r['today_date']}）用量 {r['today_value']}，"
+            f"今日（{r['today_date']}）用量 {r['today_value']}{cost_part}，"
             f"本月平均 {r['month_avg']}，"
             f"本月最高 {r['month_max']}（{r['month_max_date']}），"
             f"本月最低 {r['month_min']}（{r['month_min_date']}）"
